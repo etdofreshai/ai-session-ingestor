@@ -31,6 +31,7 @@ function parseArgs(args: string[]): SyncOptions {
     const arg = args[index];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--rescan") options.rescan = true;
+    else if (arg === "--baseline") options.baseline = true;
     else if (arg === "--source" || arg === "--sources") {
       const value = args[++index];
       if (!value) throw new Error(`${arg} requires a value`);
@@ -44,7 +45,7 @@ function parseArgs(args: string[]): SyncOptions {
       if (!Number.isFinite(value) || value < 0) throw new Error("--max-messages requires a non-negative integer");
       options.maxMessages = value;
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: npm run sync -- [options]\n\nOptions:\n  --source <ids>       Comma-separated source IDs\n  --since <date|24h>   Only messages at or after this time\n  --max-messages <n>   Limit messages per source\n  --dry-run            Scan without writing or changing state\n  --rescan             Ignore local state (API still uses append-safe conflicts)\n  --help                Show this help`);
+      console.log(`Usage: npm run sync -- [options]\n\nOptions:\n  --source <ids>       Comma-separated source IDs\n  --since <date|24h>   Only messages at or after this time\n  --max-messages <n>   Limit messages per source\n  --dry-run            Scan without writing or changing state\n  --baseline           Mark current messages as seen without API writes\n  --rescan             Ignore local state (API still skips existing records)\n  --help                Show this help`);
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);

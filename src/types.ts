@@ -60,6 +60,7 @@ export interface SyncOptions extends ScanOptions {
   sources?: SourceId[];
   dryRun?: boolean;
   rescan?: boolean;
+  baseline?: boolean;
 }
 
 export interface SourceSyncResult {
@@ -68,6 +69,7 @@ export interface SourceSyncResult {
   sessions: number;
   discovered: number;
   pending: number;
+  baselined: number;
   inserted: number;
   skipped: number;
   appended: number;

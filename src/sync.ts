@@ -30,6 +30,7 @@ function emptyResult(source: SourceAdapter, available: boolean): SourceSyncResul
     sessions: 0,
     discovered: 0,
     pending: 0,
+    baselined: 0,
     inserted: 0,
     skipped: 0,
     appended: 0,
@@ -73,8 +74,23 @@ export async function runSync(
         : discovered.filter((message) => !state.has(message.source, message.externalId));
       result.sessions = scan.sessions;
       result.discovered = discovered.length;
-      result.pending = pending.length;
       result.warnings.push(...scan.warnings);
+
+      if (options.baseline) {
+        if (options.dryRun) {
+          result.baselined = pending.length;
+        } else {
+          for (const message of pending) {
+            state.mark(message.source, message.externalId);
+          }
+          result.baselined = pending.length;
+          await state.save();
+        }
+        sourceResults.push(result);
+        continue;
+      }
+
+      result.pending = pending.length;
 
       if (!options.dryRun && pending.length > 0) {
         const writes = await writer(pending);
@@ -102,12 +118,13 @@ export async function runSync(
       sessions: sum.sessions + result.sessions,
       discovered: sum.discovered + result.discovered,
       pending: sum.pending + result.pending,
+      baselined: sum.baselined + result.baselined,
       inserted: sum.inserted + result.inserted,
       skipped: sum.skipped + result.skipped,
       appended: sum.appended + result.appended,
       failed: sum.failed + result.failed,
     }),
-    { sessions: 0, discovered: 0, pending: 0, inserted: 0, skipped: 0, appended: 0, failed: 0 },
+    { sessions: 0, discovered: 0, pending: 0, baselined: 0, inserted: 0, skipped: 0, appended: 0, failed: 0 },
   );
 
   return {

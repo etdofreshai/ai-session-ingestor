@@ -46,4 +46,39 @@ describe("sync state", () => {
     expect(second.totals.pending).toBe(0);
     expect(writes).toBe(1);
   });
+
+  it("can baseline existing identities without writing them", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ai-ingestor-baseline-"));
+    roots.push(root);
+    const message: NormalizedMessage = {
+      source: "codex",
+      externalId: "session:message",
+      timestamp: new Date("2026-01-01T00:00:00Z"),
+      sender: "Tester",
+      recipient: "Codex",
+      content: "hello",
+      metadata: { role: "human" },
+    };
+    const adapter: SourceAdapter = {
+      id: "codex",
+      displayName: "Codex",
+      rootPath: root,
+      isAvailable: () => true,
+      scan: async () => ({ source: "codex", sessions: 1, messages: [message], warnings: [] }),
+    };
+    let writes = 0;
+    const writer = async (messages: NormalizedMessage[]): Promise<BatchWriteResult> => {
+      writes += messages.length;
+      return { successful: [], failed: [] };
+    };
+    const state = new StateStore(path.join(root, "state.json"));
+
+    const baseline = await runSync({ baseline: true }, { adapters: [adapter], state, writer });
+    const next = await runSync({}, { adapters: [adapter], state, writer });
+
+    expect(baseline.totals.baselined).toBe(1);
+    expect(baseline.totals.pending).toBe(0);
+    expect(next.totals.pending).toBe(0);
+    expect(writes).toBe(0);
+  });
 });

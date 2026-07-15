@@ -27,6 +27,7 @@ function parseOptions(body: unknown): SyncOptions {
   const options: SyncOptions = {
     dryRun: input.dryRun === true,
     rescan: input.rescan === true,
+    baseline: input.baseline === true,
   };
   if (typeof input.since === "string") {
     const parsed = Date.parse(input.since);

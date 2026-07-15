@@ -77,7 +77,12 @@ Useful bounded scans:
 npm run sync -- --dry-run --source pi
 npm run sync -- --dry-run --source opencode,antigravity --since 7d
 npm run sync -- --dry-run --source codex --max-messages 100
+npm run sync -- --baseline
 ```
+
+Use `--baseline` during migration from older ingestors. It records all messages
+currently present on the host as seen without sending them to Memory Database;
+subsequent automatic syncs send only newly discovered messages.
 
 Write pending messages:
 
