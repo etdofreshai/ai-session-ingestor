@@ -49,6 +49,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = (error as Error & { cause?: unknown }).cause;
+  if (!(cause instanceof Error)) return error.message;
+  const code = (cause as Error & { code?: unknown }).code;
+  return `${error.message}: ${typeof code === "string" ? `${code} ` : ""}${cause.message}`;
+}
+
 function normalizeAction(value: unknown, status: number): WriteAction {
   if (value === "inserted") return "inserted";
   if (value === "appended") return "appended";
@@ -78,7 +86,7 @@ async function writeOne(
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = describeError(error);
       if (attempt < maxAttempts) {
         await sleep(500 * (2 ** (attempt - 1)));
         continue;
@@ -132,7 +140,7 @@ async function requireInsertOnlyCapability(config: ApiConfig): Promise<void> {
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    throw new Error(`Could not verify Memory Database capabilities: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Could not verify Memory Database capabilities: ${describeError(error)}`);
   }
   if (!response.ok) {
     throw new Error(`Could not verify Memory Database capabilities: HTTP ${response.status}`);
