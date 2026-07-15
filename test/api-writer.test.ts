@@ -1,5 +1,5 @@
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeMessages, type ApiConfig } from "../src/api-writer.js";
 import type { NormalizedMessage } from "../src/types.js";
 
@@ -8,6 +8,7 @@ let server: http.Server | null = null;
 afterEach(async () => {
   if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
   server = null;
+  vi.restoreAllMocks();
 });
 
 function sampleMessage(id: string): NormalizedMessage {
@@ -76,5 +77,23 @@ describe("Memory Database writer", () => {
 
     await expect(writeMessages([sampleMessage("one")], config)).rejects.toThrow(/skip_existing/);
     expect(postCount).toBe(0);
+  });
+
+  it("falls back to curl when Node networking is unavailable", async () => {
+    server = http.createServer((request, response) => {
+      response.writeHead(request.method === "POST" ? 201 : 200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(request.method === "POST"
+        ? { action: "inserted", conflict_mode: "skip_existing" }
+        : { status: "ok", capabilities: { message_conflict_modes: ["skip_existing"] } }));
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const config: ApiConfig = { baseUrl: `http://127.0.0.1:${address.port}`, token: "test", concurrency: 1 };
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network unavailable"));
+
+    const result = await writeMessages([sampleMessage("curl")], config);
+
+    expect(result.successful.map((entry) => entry.action)).toEqual(["inserted"]);
   });
 });

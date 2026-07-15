@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import type {
   BatchWriteResult,
   MessageWriteResult,
@@ -57,6 +58,104 @@ function describeError(error: unknown): string {
   return `${error.message}: ${typeof code === "string" ? `${code} ` : ""}${cause.message}`;
 }
 
+interface HttpResult {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  bodyText: string;
+  retryAfter: string | null;
+}
+
+async function curlRequest(
+  url: string,
+  method: "GET" | "POST",
+  headers: Record<string, string>,
+  body: string | undefined,
+  timeoutMs: number,
+): Promise<HttpResult> {
+  const statusMarker = "\n__AI_INGESTOR_HTTP_STATUS__:";
+  const args = [
+    "-sS",
+    "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
+    "-X", method,
+    "--config", "/dev/fd/3",
+    "-w", `${statusMarker}%{http_code}`,
+  ];
+  if (body !== undefined) args.push("--data-binary", "@-");
+  args.push(url);
+
+  const child = spawn(process.env.CURL_PATH?.trim() || "/usr/bin/curl", args, {
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
+  });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+  child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+
+  const config = Object.entries(headers).map(([name, value]) => {
+    const escaped = `${name}: ${value}`.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    return `header = "${escaped}"`;
+  }).join("\n");
+  const configPipe = child.stdio[3];
+  if (!configPipe || typeof configPipe === "number" || !("end" in configPipe)) {
+    child.kill();
+    throw new Error("curl fallback could not open its private configuration pipe");
+  }
+  configPipe.end(`${config}\n`);
+  child.stdin.end(body);
+
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const output = Buffer.concat(stdout).toString("utf8");
+  const markerIndex = output.lastIndexOf(statusMarker);
+  const detail = Buffer.concat(stderr).toString("utf8").trim();
+  if (exitCode !== 0 || markerIndex < 0) {
+    throw new Error(detail || `curl exited with status ${String(exitCode)}`);
+  }
+  const status = Number.parseInt(output.slice(markerIndex + statusMarker.length), 10);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: "",
+    bodyText: output.slice(0, markerIndex),
+    retryAfter: null,
+  };
+}
+
+async function request(
+  url: string,
+  method: "GET" | "POST",
+  headers: Record<string, string>,
+  body: string | undefined,
+  timeoutMs: number,
+): Promise<HttpResult> {
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      bodyText: await response.text(),
+      retryAfter: response.headers.get("retry-after"),
+    };
+  } catch (fetchError) {
+    try {
+      return await curlRequest(url, method, headers, body, timeoutMs);
+    } catch (curlError) {
+      throw new Error(
+        `${describeError(fetchError)}; curl fallback failed: ${describeError(curlError)}`,
+      );
+    }
+  }
+}
+
 function normalizeAction(value: unknown, status: number): WriteAction {
   if (value === "inserted") return "inserted";
   if (value === "appended") return "appended";
@@ -74,17 +173,15 @@ async function writeOne(
   let lastError = "unknown API error";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let response: Response;
+    let response: HttpResult;
     try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.token}`,
-        },
-        body: JSON.stringify(toApiPayload(message)),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      response = await request(
+        url,
+        "POST",
+        { "Content-Type": "application/json", Authorization: `Bearer ${config.token}` },
+        JSON.stringify(toApiPayload(message)),
+        timeoutMs,
+      );
     } catch (error) {
       lastError = describeError(error);
       if (attempt < maxAttempts) {
@@ -94,7 +191,7 @@ async function writeOne(
       throw new Error(lastError);
     }
 
-    const bodyText = await response.text();
+    const bodyText = response.bodyText;
     let body: Record<string, unknown> = {};
     try {
       const parsed = bodyText ? JSON.parse(bodyText) as unknown : {};
@@ -108,7 +205,7 @@ async function writeOne(
     if (response.status === 429 || response.status >= 500) {
       lastError = `Memory Database API ${response.status}: ${bodyText.slice(0, 300) || response.statusText}`;
       if (attempt < maxAttempts) {
-        const retryAfter = Number.parseFloat(response.headers.get("retry-after") ?? "0");
+        const retryAfter = Number.parseFloat(response.retryAfter ?? "0");
         await sleep(retryAfter > 0 ? retryAfter * 1_000 : 500 * (2 ** (attempt - 1)));
         continue;
       }
@@ -133,19 +230,22 @@ async function writeOne(
 
 async function requireInsertOnlyCapability(config: ApiConfig): Promise<void> {
   const timeoutMs = Math.max(1_000, Number.parseInt(process.env.API_TIMEOUT_MS ?? "30000", 10) || 30_000);
-  let response: Response;
+  let response: HttpResult;
   try {
-    response = await fetch(`${config.baseUrl}/api/health`, {
-      headers: { Authorization: `Bearer ${config.token}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    response = await request(
+      `${config.baseUrl}/api/health`,
+      "GET",
+      { Authorization: `Bearer ${config.token}` },
+      undefined,
+      timeoutMs,
+    );
   } catch (error) {
     throw new Error(`Could not verify Memory Database capabilities: ${describeError(error)}`);
   }
   if (!response.ok) {
     throw new Error(`Could not verify Memory Database capabilities: HTTP ${response.status}`);
   }
-  const body = await response.json() as {
+  const body = JSON.parse(response.bodyText) as {
     capabilities?: { message_conflict_modes?: unknown };
   };
   const modes = body.capabilities?.message_conflict_modes;
