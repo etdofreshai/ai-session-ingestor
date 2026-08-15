@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   BatchWriteResult,
   MessageWriteResult,
@@ -74,54 +77,55 @@ async function curlRequest(
   timeoutMs: number,
 ): Promise<HttpResult> {
   const statusMarker = "\n__AI_INGESTOR_HTTP_STATUS__:";
-  const args = [
-    "-sS",
-    "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
-    "-X", method,
-    "--config", "/dev/fd/3",
-    "-w", `${statusMarker}%{http_code}`,
-  ];
-  if (body !== undefined) args.push("--data-binary", "@-");
-  args.push(url);
-
-  const child = spawn(process.env.CURL_PATH?.trim() || "/usr/bin/curl", args, {
-    stdio: ["pipe", "pipe", "pipe", "pipe"],
-  });
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-  child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-
   const config = Object.entries(headers).map(([name, value]) => {
     const escaped = `${name}: ${value}`.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     return `header = "${escaped}"`;
   }).join("\n");
-  const configPipe = child.stdio[3];
-  if (!configPipe || typeof configPipe === "number" || !("end" in configPipe)) {
-    child.kill();
-    throw new Error("curl fallback could not open its private configuration pipe");
-  }
-  configPipe.end(`${config}\n`);
-  child.stdin.end(body);
+  const configDirectory = await mkdtemp(join(tmpdir(), "ai-session-ingestor-curl-"));
+  const configPath = join(configDirectory, "headers.conf");
 
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", resolve);
-  });
-  const output = Buffer.concat(stdout).toString("utf8");
-  const markerIndex = output.lastIndexOf(statusMarker);
-  const detail = Buffer.concat(stderr).toString("utf8").trim();
-  if (exitCode !== 0 || markerIndex < 0) {
-    throw new Error(detail || `curl exited with status ${String(exitCode)}`);
+  try {
+    await writeFile(configPath, `${config}\n`, { encoding: "utf8", mode: 0o600 });
+    const args = [
+      "-sS",
+      "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
+      "-X", method,
+      "--config", configPath,
+      "-w", `${statusMarker}%{http_code}`,
+    ];
+    if (body !== undefined) args.push("--data-binary", "@-");
+    args.push(url);
+
+    const child = spawn(process.env.CURL_PATH?.trim() || "/usr/bin/curl", args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.stdin.end(body);
+
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    const output = Buffer.concat(stdout).toString("utf8");
+    const markerIndex = output.lastIndexOf(statusMarker);
+    const detail = Buffer.concat(stderr).toString("utf8").trim();
+    if (exitCode !== 0 || markerIndex < 0) {
+      throw new Error(detail || `curl exited with status ${String(exitCode)}`);
+    }
+    const status = Number.parseInt(output.slice(markerIndex + statusMarker.length), 10);
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: "",
+      bodyText: output.slice(0, markerIndex),
+      retryAfter: null,
+    };
+  } finally {
+    await rm(configDirectory, { recursive: true, force: true });
   }
-  const status = Number.parseInt(output.slice(markerIndex + statusMarker.length), 10);
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: "",
-    bodyText: output.slice(0, markerIndex),
-    retryAfter: null,
-  };
 }
 
 async function request(
