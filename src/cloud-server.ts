@@ -26,6 +26,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS items_thread ON items(thread_id);
   CREATE INDEX IF NOT EXISTS usage_thread ON usage(thread_id);
 `);
+// Forked threads may retain original turn/item IDs. Keep identity scoped to thread.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS thread_turns (
+    id TEXT NOT NULL, thread_id TEXT NOT NULL, status TEXT NOT NULL, PRIMARY KEY(thread_id,id)
+  );
+  CREATE TABLE IF NOT EXISTS thread_items (
+    id TEXT NOT NULL, thread_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(thread_id,id)
+  );
+  INSERT OR IGNORE INTO thread_turns SELECT * FROM turns;
+  INSERT OR IGNORE INTO thread_items SELECT * FROM items;
+`);
 
 function saveJson(file: string, body: unknown): void {
   fs.writeFileSync(file + ".tmp", JSON.stringify(body) + "\n", { mode: 0o600 });
@@ -93,7 +104,7 @@ class CloudRpc {
     await this.call("initialize", { clientInfo: { name: "codex-cloud-ingestor", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     ws.send(JSON.stringify({ method: "initialized" }));
   }
-  call(method: string, params: any): Promise<any> {
+  call(method: string, params: any, timeoutMs = 60000): Promise<any> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Cloud unavailable"));
     const id = ++this.nextId;
@@ -101,7 +112,7 @@ class CloudRpc {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Cloud request timeout: ${method}`));
-      }, 60_000);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params }));
     });
@@ -127,7 +138,7 @@ async function subscribe(thread: CloudThread): Promise<void> {
   if (!rpc || subscriptions.has(thread.id)) return;
   subscriptions.add(thread.id);
   try {
-    const result = await rpc.call("thread/resume", { threadId: thread.id, excludeTurns: true });
+    const result = await rpc.call("thread/resume", { threadId: thread.id, excludeTurns: true }, 15000);
     models.set(thread.id, { model: result.model ?? thread.model ?? "unknown", effort: result.reasoningEffort ?? thread.reasoningEffort });
   } catch (error) { subscriptions.delete(thread.id); throw error; }
 }
@@ -197,7 +208,7 @@ async function pageAll(method: string, params: any): Promise<any[]> {
 }
 
 function storeRows(thread: CloudThread, rows: CloudRow[]): void {
-  const itemInsert = db.prepare("INSERT OR REPLACE INTO items VALUES (?,?,?)");
+  const itemInsert = db.prepare("INSERT OR REPLACE INTO thread_items VALUES (?,?,?)");
   const messageInsert = db.prepare("INSERT OR IGNORE INTO messages(id,body) VALUES (?,?)");
   db.exec("BEGIN");
   try {
@@ -265,7 +276,7 @@ function exportThread(id: string): void {
   const entry = db.prepare("SELECT body FROM threads WHERE id=?").get(id);
   if (!entry) return;
   const thread = JSON.parse(String(entry.body)) as CloudThread;
-  const rows = db.prepare("SELECT body FROM items WHERE thread_id=?").all(id)
+  const rows = db.prepare("SELECT body FROM thread_items WHERE thread_id=?").all(id)
     .map(r => JSON.parse(String(r.body)) as CloudRow)
     .sort((a, b) => (a.startedAtMs ?? a.completedAtMs ?? 0) - (b.startedAtMs ?? b.completedAtMs ?? 0));
   const records = rolloutRows(thread, rows);
@@ -341,23 +352,34 @@ async function sync(): Promise<void> {
     }
     const threads = [...all.values()];
     // Subscribe before history collection so new calls are counted during backfill.
-    for (const thread of threads.filter(t => !t.archived)) await subscribe(thread);
+    status.subscriptionFailures = [];
+    for (const thread of threads.filter(t => !t.archived && t.status?.type === "active")) {
+      try { await subscribe(thread); }
+      catch { status.subscriptionFailures.push(thread.id); }
+    }
+    console.log(`[cloud] Found ${threads.length} threads; ${subscriptions.size} live subscriptions`);
+    status.historyFailures = {};
     for (const thread of threads.sort((a, b) => b.updatedAt - a.updatedAt)) {
       if (stopping) break;
-      db.prepare("INSERT OR REPLACE INTO threads VALUES (?,?)").run(thread.id, JSON.stringify(thread));
-      const turns = await pageAll("thread/turns/list", { threadId: thread.id, sortDirection: "asc", itemsView: "notLoaded" });
-      for (const turn of turns) {
-        if (!uuid.test(turn.id)) throw new Error("Invalid cloud turn");
-        const old = db.prepare("SELECT status FROM turns WHERE id=?").get(turn.id);
-        if (old && old.status === turn.status && ["completed", "failed", "interrupted"].includes(turn.status)) continue;
-        const rows = await pageAll("thread/items/list", { threadId: thread.id, turnId: turn.id, sortDirection: "asc" });
-        storeRows(thread, rows);
-        db.prepare("INSERT OR REPLACE INTO turns VALUES (?,?,?)").run(turn.id, thread.id, turn.status);
+      try {
+        db.prepare("INSERT OR REPLACE INTO threads VALUES (?,?)").run(thread.id, JSON.stringify(thread));
+        const turns = await pageAll("thread/turns/list", { threadId: thread.id, sortDirection: "asc", itemsView: "notLoaded" });
+        for (const turn of turns) {
+          if (!uuid.test(turn.id)) throw new Error("Invalid cloud turn");
+          const old = db.prepare("SELECT status FROM thread_turns WHERE thread_id=? AND id=?").get(thread.id, turn.id);
+          if (old && old.status === turn.status && ["completed", "failed", "interrupted"].includes(turn.status)) continue;
+          const rows = await pageAll("thread/items/list", { threadId: thread.id, turnId: turn.id, sortDirection: "asc" });
+          storeRows(thread, rows);
+          db.prepare("INSERT OR REPLACE INTO thread_turns VALUES (?,?,?)").run(turn.id, thread.id, turn.status);
+        }
+        dirty.add(thread.id);
+        exportThread(thread.id);
+        dirty.delete(thread.id);
+        count++;
+      } catch (error) {
+        status.historyFailures[thread.id] = error instanceof Error ? error.message : "History unavailable";
+        console.warn(`[cloud] History deferred: ${thread.id}`);
       }
-      dirty.add(thread.id);
-      exportThread(thread.id);
-      dirty.delete(thread.id);
-      count++;
       if (count % 5 === 0) {
         console.log(`[cloud] History ${count}/${threads.length} threads`);
         await flushMessages();
@@ -369,7 +391,7 @@ async function sync(): Promise<void> {
     for (const thread of threads) exportThread(thread.id);
     status.lastSync = new Date().toISOString();
     checkpoint("lastSync", status.lastSync);
-    console.log(`[cloud] Sync complete: ${count} threads`);
+    console.log(`[cloud] Sync finished: ${count} threads, ${Object.keys(status.historyFailures).length} deferred`);
   } catch (error) {
     status.lastError = error instanceof Error ? error.message : "Sync failed";
     console.error(`[cloud] ${status.lastError}`);

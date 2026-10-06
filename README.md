@@ -52,7 +52,7 @@ original cloud items. Completed turns are checkpointed; active turns are
 rechecked. Failed memory writes remain pending, and every write uses
 `skip_existing`. A running sync is never overlapped.
 
-The service subscribes to unarchived threads without starting turns or sending
+The service subscribes to active threads without starting turns or sending
 messages. Live token notifications are deduplicated by cumulative token total.
 Each dated cost record uses only the notification's last model call; cumulative
 historical totals and gaps remain separate coverage snapshots. Historical
@@ -68,6 +68,8 @@ Endpoints:
 - `POST /api/sync`: authenticated, schedules a sync and returns `202`.
 
 Auth failures try the next host. Connection loss reconnects on the next sync.
+An unavailable thread is deferred without blocking other history. Global
+turn-start notifications subscribe to new active threads between scans.
 SQLite and atomic export files survive redeploys. Shutdown preserves checkpoints.
 
 ## Supported sources
