@@ -236,8 +236,11 @@ function onNotification(method: string, params: any): void {
         await subscribe(result.thread);
       }).catch(() => { console.warn("[cloud] New thread subscription deferred to next sync"); });
   }
-  if (method === "thread/settings/updated" && params.model) {
-    models.set(id, { model: params.model, effort: params.reasoningEffort });
+  if (method === "thread/settings/updated" && params.threadSettings?.model) {
+    models.set(id, { model: params.threadSettings.model, effort: params.threadSettings.effort });
+  }
+  if (method === "model/rerouted" && params.toModel) {
+    models.set(id, { ...models.get(id), model: params.toModel });
   }
   if (method === "thread/tokenUsage/updated") {
     const model = models.get(id);
@@ -358,6 +361,10 @@ async function sync(): Promise<void> {
       catch { status.subscriptionFailures.push(thread.id); }
     }
     console.log(`[cloud] Found ${threads.length} threads; ${subscriptions.size} live subscriptions`);
+    // Publish allowance snapshots and retry queued writes before a long history backfill.
+    try { await syncUsagePlan(threads); status.planUsageError = null; }
+    catch (error) { status.planUsageError = error instanceof Error ? error.message : "Plan usage unavailable"; }
+    await flushMessages();
     status.historyFailures = {};
     for (const thread of threads.sort((a, b) => b.updatedAt - a.updatedAt)) {
       if (stopping) break;
