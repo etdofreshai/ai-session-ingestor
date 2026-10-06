@@ -47,7 +47,12 @@ Mount separate named volumes at `/data` (SQLite, SSH credentials) and `/export`
 Active and archived cloud threads are backfilled with full pagination. User and
 completed assistant text, plus incoming cloud delegations, use stable
 `cloud:<thread-id>:<item-id>` identities under Memory Database's `codex` source.
-Tool results and reasoning stay out of the memory index. SQLite retains the
+Accepted ChatGPT replies sent by Dot through `user_message.send_message` are
+indexed as assistant messages, with their delivery IDs and timestamps. Repeated
+deliveries or copied histories share `cloud:delivery:<message-id>` identities.
+Failed sends and ordinary tool results remain excluded. Versioned text projection
+upgrades reprocess retained items, including already-checkpointed terminal turns.
+Reasoning stays out of the memory index. SQLite retains the
 original cloud items. Completed turns are checkpointed; active turns are
 rechecked. Failed memory writes remain pending, and every write uses
 `skip_existing`. A running sync is never overlapped.

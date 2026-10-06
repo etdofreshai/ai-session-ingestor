@@ -29,4 +29,32 @@ describe("cloud history", () => {
     expect(records[0].payload.model).toBe("sol");
     expect(() => usageRecord({ tokenUsage: { last: { ...last, cachedInputTokens: 200 }, total } }, "", "sol")).toThrow();
   });
+  it("captures accepted Dot replies as assistant messages, excluding failed sends and other tools", () => {
+    const r = row("mcpToolCall", {
+      server: "codex_apps", tool: "user_message.send_message", status: "completed", error: null,
+      arguments: { channel: "chatgpt", text: "Delivered reply", destination: { message_id: "original" } },
+      result: { structuredContent: {
+        channel: "chatgpt", status: "accepted", message_id: "Sentinel_reply", room_id: "room",
+        created_at: "2026-10-06T12:00:00Z",
+      } },
+    });
+    const msg = messageFromRow(thread, r, "ET")!;
+    expect(msg.content).toBe("Delivered reply");
+    expect(msg.sender).toBe("Dot");
+    expect(msg.externalId).toBe("cloud:delivery:Sentinel_reply");
+    expect(messageFromRow({ ...thread, id: "copy" }, { ...r, item: { ...r.item, id: "retry" } }, "ET")?.externalId).toBe(msg.externalId);
+    expect(msg.metadata).toMatchObject({ role: "assistant", deliveryMessageId: "Sentinel_reply", replyToMessageId: "original" });
+    expect(msg.timestamp.toISOString()).toBe("2026-10-06T12:00:00.000Z");
+    const records = rolloutRows(thread, [r]);
+    expect(records.filter(r => r.payload.type === "agent_message")).toHaveLength(1);
+    expect(records.filter(r => r.payload.type === "user_message")).toHaveLength(0);
+    expect(records.filter(r => r.payload.type === "function_call")).toHaveLength(1);
+    for (const item of [
+      { ...r.item, status: "failed", error: { message: "Failed" } },
+      { ...r.item, result: { structuredContent: { ...r.item.result.structuredContent, status: "failed" } } },
+      { ...r.item, arguments: { ...r.item.arguments, channel: "sms" } },
+      { ...r.item, tool: "cloud_threads.send_message" },
+    ]) expect(messageFromRow(thread, { ...r, item }, "ET")).toBeNull();
+    expect(messageFromRow(thread, { ...r, completedAtMs: null }, "ET")).toBeNull();
+  });
 });

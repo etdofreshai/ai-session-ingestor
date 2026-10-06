@@ -409,6 +409,23 @@ async function sync(): Promise<void> {
   }
 }
 
+// Rebuild the text projection from retained items when supported message forms change.
+// This also covers terminal turns that no longer need to be fetched from the cloud.
+if (checkpoint("messageProjectionVersion") !== 2) {
+  const insert = db.prepare("INSERT OR IGNORE INTO messages(id,body) VALUES (?,?)");
+  let added = 0;
+  for (const record of db.prepare("SELECT body FROM threads").all()) {
+    const thread = JSON.parse(String(record.body)) as CloudThread;
+    for (const raw of db.prepare("SELECT body FROM thread_items WHERE thread_id=?").iterate(thread.id)) {
+      const msg = messageFromRow(thread, JSON.parse(String(raw.body)), process.env.SENDER_NAME ?? "ET");
+      if (msg) added += Number(insert.run(msg.externalId, JSON.stringify(msg)).changes);
+    }
+    exportThread(thread.id);
+  }
+  checkpoint("messageProjectionVersion", 2);
+  console.log(`[cloud] Text projection upgraded: ${added} messages queued`);
+}
+
 const app = express();
 app.use(express.json({ limit: "16kb" }));
 app.get("/api/health", (_req, res) => res.json({ status: "ok", connected: status.connected, syncing: busy }));
