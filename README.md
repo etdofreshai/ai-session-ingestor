@@ -152,3 +152,22 @@ ai-session-ingestor-state volume  -> /app/.data
 
 Point the corresponding `*_DATA_DIR` environment variables at those mounted
 paths.
+
+## Local reliability and freshness
+
+Session JSONL is streamed rather than loaded as one string, so multi-gigabyte
+logs do not hit Node's string-size limit. Physical line numbering remains stable.
+The service persists its last sync result and publishes per-host/per-source
+heartbeats to the same Memory API. Warnings or unavailable sources remain visible;
+a successful poll with no new messages is still reported.
+
+The connectors/imessage.py collector runs locally on a Mac with read access to
+~/Library/Messages/chat.db. It uses message GUIDs for idempotency, durable row
+checkpoints, and a dedicated imessage write token. It uploads available original
+attachments through the Memory API and reports unavailable/oversized files for
+retry. It does not decode attributed-only bodies; these are explicitly labeled.
+
+Run it first with --dry-run, --env pointing to its protected credential file,
+and --since set to that account's last archived timestamp. Add --interval 900
+for regular polling. The env file contains MEMORY_DATABASE_API_URL and
+MEMORY_DATABASE_API_WRITE_TOKEN; protect it with mode 0600.

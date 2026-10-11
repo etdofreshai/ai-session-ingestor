@@ -45,7 +45,14 @@ export function toApiPayload(message: NormalizedMessage): Record<string, unknown
     content: message.content,
     timestamp: message.timestamp.toISOString(),
     external_id: message.externalId,
-    metadata: message.metadata,
+    metadata: {
+      ...message.metadata,
+      conversation_id: message.metadata.sessionId ?? message.metadata.session_id ?? null,
+      kind: message.content.startsWith('[IMPORTANT: The user has invoked the ')
+        ? 'injected_instructions'
+        : message.metadata.phase === 'commentary' ? 'progress_update'
+        : message.metadata.role === 'assistant' ? 'assistant_message' : 'human_message',
+    },
   };
 }
 
@@ -71,7 +78,7 @@ interface HttpResult {
 
 async function curlRequest(
   url: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   headers: Record<string, string>,
   body: string | undefined,
   timeoutMs: number,
@@ -128,13 +135,14 @@ async function curlRequest(
   }
 }
 
-async function request(
+export async function request(
   url: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   headers: Record<string, string>,
   body: string | undefined,
   timeoutMs: number,
 ): Promise<HttpResult> {
+  headers = { "User-Agent": "Mozilla/5.0 MemoryIngestor/1.0", ...headers };
   try {
     const response = await fetch(url, {
       method,

@@ -4,6 +4,7 @@ import { createAdapters } from "./adapters/index.js";
 import { getApiConfig } from "./api-writer.js";
 import { StateStore } from "./state-store.js";
 import { runSync } from "./sync.js";
+import { saveAndReportSync, readLastSync } from "./sync-report.js";
 import { SOURCE_IDS, type SourceId, type SyncOptions, type SyncResult } from "./types.js";
 
 const app = express();
@@ -53,6 +54,7 @@ async function startSync(options: SyncOptions): Promise<SyncResult> {
   activeSync = runSync(options);
   try {
     lastResult = await activeSync;
+    await saveAndReportSync(lastResult).catch((error) => console.error(`[ai-session-ingestor] Freshness report failed: ${error.message}`));
     return lastResult;
   } finally {
     activeSync = null;
@@ -90,7 +92,7 @@ app.get("/api/status", async (_request, response) => {
       autoSync,
       syncIntervalMs: intervalMs,
       stateCounts: state.counts(),
-      lastResult,
+      lastResult: lastResult ?? await readLastSync(),
     });
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : String(error) });

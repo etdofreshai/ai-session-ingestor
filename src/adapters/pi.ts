@@ -41,16 +41,15 @@ export class PiAdapter implements SourceAdapter {
     const messages: NormalizedMessage[] = [];
 
     for (const filePath of files) {
-      const entries = await readJsonLines(filePath).catch((error: unknown) => {
+      const entries = readJsonLines(filePath,(error: unknown) => {
         warnings.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
       });
       let sessionId = path.basename(filePath, ".jsonl").split("_").at(-1) ?? path.basename(filePath, ".jsonl");
       let cwd: string | null = null;
       let model: string | null = null;
       let provider: string | null = null;
 
-      for (const { lineNumber, value } of entries) {
+      for await (const { lineNumber, value } of entries) {
         if (value.type === "session") {
           sessionId = stringOrNull(value.id) ?? sessionId;
           cwd = stringOrNull(value.cwd);

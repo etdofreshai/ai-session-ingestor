@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
+import { createInterface } from "node:readline";
 import path from "node:path";
 
 export function expandHome(input: string): string {
@@ -68,23 +69,25 @@ export async function walkFiles(
   return found.sort();
 }
 
-export async function readJsonLines(
+export async function* readJsonLines(
   filePath: string,
-): Promise<Array<{ lineNumber: number; value: Record<string, unknown> }>> {
-  const raw = await fsPromises.readFile(filePath, "utf8");
-  const output: Array<{ lineNumber: number; value: Record<string, unknown> }> = [];
-  for (const [index, line] of raw.split(/\r?\n/).entries()) {
-    if (!line.trim()) continue;
-    try {
-      const value = JSON.parse(line) as unknown;
+  onError: (error: unknown) => void = (error) => { throw error; },
+): AsyncGenerator<{ lineNumber: number; value: Record<string, unknown> }> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let lineNumber = 0;
+  try {
+    for await (const line of lines) {
+      lineNumber += 1;
+      if (!line.trim()) continue;
+      let value: unknown;
+      try { value = JSON.parse(line); } catch { continue; }
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        output.push({ lineNumber: index + 1, value: value as Record<string, unknown> });
+        yield { lineNumber, value: value as Record<string, unknown> };
       }
-    } catch {
-      // Session files may be actively appended. A partial final line is retried next scan.
     }
-  }
-  return output;
+  } catch (error) { onError(error); }
+  finally { lines.close(); stream.destroy(); }
 }
 
 export function applyMessageLimit<T>(items: T[], maxMessages?: number): T[] {

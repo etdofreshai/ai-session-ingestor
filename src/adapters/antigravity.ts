@@ -88,12 +88,11 @@ export class AntigravityAdapter implements SourceAdapter {
       const conversationId = relative[0];
       if (!conversationId) continue;
       const summary = summaries.get(conversationId);
-      const entries = await readJsonLines(filePath).catch((error: unknown) => {
+      const entries = readJsonLines(filePath,(error: unknown) => {
         warnings.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
       });
 
-      for (const { lineNumber, value } of entries) {
+      for await (const { lineNumber, value } of entries) {
         const type = value.type;
         const role = type === "USER_INPUT" ? "human" : type === "PLANNER_RESPONSE" ? "assistant" : null;
         if (!role || typeof value.content !== "string" || !value.content.trim()) continue;

@@ -38,12 +38,11 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       const relative = path.relative(projectsRoot, filePath).split(path.sep);
       const project = relative[0] || "unknown";
       const fallbackSessionId = path.basename(filePath, ".jsonl");
-      const entries = await readJsonLines(filePath).catch((error: unknown) => {
+      const entries = readJsonLines(filePath,(error: unknown) => {
         warnings.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
       });
 
-      for (const { value } of entries) {
+      for await (const { value } of entries) {
         const type = value.type;
         if (type !== "user" && type !== "assistant") continue;
         const rawMessage = value.message;

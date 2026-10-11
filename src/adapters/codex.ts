@@ -53,15 +53,14 @@ export class CodexAdapter implements SourceAdapter {
     const byExternalId = new Map<string, NormalizedMessage>();
 
     for (const filePath of files) {
-      const entries = await readJsonLines(filePath).catch((error: unknown) => {
+      const entries = readJsonLines(filePath,(error: unknown) => {
         warnings.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
       });
       let sessionId = path.basename(filePath, ".jsonl").replace(/^rollout-[^-]+-[^-]+-/, "");
       let cwd: string | null = null;
       let model: string | null = null;
 
-      for (const { lineNumber, value } of entries) {
+      for await (const { lineNumber, value } of entries) {
         const payload = value.payload && typeof value.payload === "object" && !Array.isArray(value.payload)
           ? value.payload as Record<string, unknown>
           : {};
