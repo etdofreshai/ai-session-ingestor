@@ -94,7 +94,7 @@ def run(config,args):
             result=upload(config,message,available)
             if not result.get('message',{}).get('record_id'): raise ValueError('No confirmed record ID')
         except Exception as error:
-            report['failed']+=1; report['error']=type(error).__name__; break
+            report['failed']+=1; report['error']=type(error).__name__; report['error_detail']=str(error)[:200]; break
         report['written']+=1; report['attachments_missing']+=len(missing)
         state['last_rowid']=max(state['last_rowid'],row['rowid'])
         state['retry']=[x for x in state.get('retry',[]) if x!=row['rowid']]
@@ -132,7 +132,7 @@ def main():
     while True:
         try: backlog=run(config,args)
         except Exception as error:
-            print(json.dumps({'source':'imessage','error':type(error).__name__}),flush=True); backlog=False
+            print(json.dumps({'source':'imessage','error':type(error).__name__,'error_detail':str(error)[:200]}),flush=True); backlog=False
             if not args.interval: raise
         if not args.interval or args.dry_run: break
         time.sleep(2 if backlog else args.interval)
